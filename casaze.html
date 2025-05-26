@@ -9,10 +9,8 @@
             --primary: #4285f4;
             --generation: #34a853;    /* verde - produção */
             --import: #ea4335;        /* vermelho - importação */
+            --export: #34a853;        /* verde - exportação */
             --consumption: #fbbc05;   /* amarelo - consumo */
-            --positive-flow: #ea4335; /* vermelho */
-            --negative-flow: #34a853; /* verde */
-            --connection-line: #666;   /* cinza para linhas */
             --text: #202124;
         }
         
@@ -95,16 +93,19 @@
             top: 10%;
             left: 50%;
             transform: translateX(-50%);
+            background-color: var(--generation);
         }
         
         .circle-consumption {
             bottom: 15%;
             left: 30%;
+            background-color: var(--consumption);
         }
         
         .circle-import {
             top: 15%;
             left: 15%;
+            background-color: var(--import);
         }
         
         @media (min-width: 768px) {
@@ -254,6 +255,13 @@
             font-size: clamp(0.9rem, 3vw, 1rem);
         }
         
+        .chart-container {
+            position: relative;
+            width: 100%;
+            min-height: 250px;
+            max-height: 400px;
+        }
+        
         #dataTable {
             margin-top: 15px;
             max-height: 300px;
@@ -330,14 +338,6 @@
         .error {
             background-color: #f8d7da;
             color: #721c24;
-        }
-
-        /* Adicionando estilos para o gráfico responsivo */
-        .chart-container {
-            position: relative;
-            width: 100%;
-            min-height: 250px;
-            max-height: 400px;
         }
     </style>
 </head>
@@ -425,22 +425,23 @@
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/luxon@3.0.1"></script>
     <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-luxon@1.2.0"></script>
-    <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-zoom@1.2.1"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-streaming@2.0.0"></script>
 
     <script>
         // CONFIGURAÇÃO
         const CONFIG = {
             deviceId: "c45bbee1fd27",
             authKey: "MjFkM2IxdWlk87450512E000570046BE7579151D5C48F4FED67642847DD24161500B8A5B0CA7000733819F55FC2C",
-            refreshInterval: 5000,
+            refreshInterval: 5000,       // Atualização dos valores numéricos a cada 5 segundos
+            chartRefreshInterval: 30000, // Atualização do gráfico a cada 30 segundos
             dataCollectionInterval: 300000, // 5 minutos em milissegundos
-            maxRetries: 3, // Número máximo de tentativas de reconexão
-            retryDelay: 2000 // Tempo entre tentativas em ms
+            maxRetries: 3,
+            retryDelay: 2000,
+            chartHoursToShow: 24         // Mostrar últimas 24 horas no gráfico
         };
 
         // Elementos da interface
         const elements = {
-            // Monitoramento em tempo real
             avgVoltage: document.getElementById('avgVoltage'),
             importPower: document.getElementById('importPower'),
             consumptionPower: document.getElementById('consumptionPower'),
@@ -453,7 +454,6 @@
             refreshIcon: document.getElementById('refreshIcon'),
             errorDisplay: document.getElementById('errorDisplay'),
             
-            // Histórico de dados
             prevDayBtn: document.getElementById('prevDay'),
             nextDayBtn: document.getElementById('nextDay'),
             currentDate: document.getElementById('currentDate'),
@@ -518,7 +518,6 @@
                 elements.generationPower.textContent = '--';
             },
             
-            // Função para verificar se os dados são válidos
             validateData: (data) => {
                 if (!data || !data.isok || !data.data || !data.data.device_status) {
                     return false;
@@ -529,7 +528,6 @@
                     return false;
                 }
                 
-                // Verifica valores numéricos
                 if (isNaN(parseFloat(emeters[0].power))) return false;
                 if (isNaN(parseFloat(emeters[1].power))) return false;
                 
@@ -543,6 +541,7 @@
             currentDate: luxon.DateTime.now().setZone('Europe/Lisbon'),
             chart: null,
             collectionInterval: null,
+            chartUpdateInterval: null,
             
             init: function() {
                 this.loadFromStorage();
@@ -550,6 +549,7 @@
                 this.setupControls();
                 this.loadDay(this.currentDate);
                 this.startDataCollection();
+                this.startChartAutoUpdate();
             },
             
             loadFromStorage: function() {
@@ -558,7 +558,6 @@
                     try {
                         this.data = JSON.parse(savedData);
                         
-                        // Converter strings de data para objetos DateTime
                         Object.keys(this.data).forEach(date => {
                             this.data[date].forEach(entry => {
                                 entry.timestamp = luxon.DateTime.fromISO(entry.timestamp);
@@ -573,7 +572,6 @@
             
             saveToStorage: function() {
                 try {
-                    // Converter objetos DateTime para strings antes de salvar
                     const dataToSave = {};
                     Object.keys(this.data).forEach(date => {
                         dataToSave[date] = this.data[date].map(entry => ({
@@ -589,13 +587,17 @@
             },
             
             startDataCollection: function() {
-                // Coleta dados a cada 5 minutos
                 this.collectionInterval = setInterval(() => {
                     this.collectData();
                 }, CONFIG.dataCollectionInterval);
                 
-                // Coleta imediata ao iniciar
                 this.collectData();
+            },
+            
+            startChartAutoUpdate: function() {
+                this.chartUpdateInterval = setInterval(() => {
+                    this.updateChart();
+                }, CONFIG.chartRefreshInterval);
             },
             
             collectData: function() {
@@ -609,14 +611,12 @@
                     this.data[dateKey] = [];
                 }
                 
-                // Verifica se já existe registro nos últimos 2 minutos
                 const twoMinutesAgo = now.minus({ minutes: 2 });
                 const recentEntry = this.data[dateKey].find(entry => 
                     entry.timestamp > twoMinutesAgo
                 );
                 
                 if (!recentEntry) {
-                    // Adiciona novo ponto de dados
                     this.data[dateKey].push({
                         timestamp: now,
                         generation: parseFloat(elements.generationPower.textContent) || 0,
@@ -625,14 +625,11 @@
                         timeLabel: timeKey
                     });
                     
-                    // Ordena por timestamp
                     this.data[dateKey].sort((a, b) => a.timestamp - b.timestamp);
                     
                     this.saveToStorage();
                     
-                    // Se for o dia atual, atualiza o gráfico
                     if (dateKey === this.currentDate.toFormat('yyyy-MM-dd')) {
-                        this.updateChart();
                         this.updateTable();
                     }
                 }
@@ -656,32 +653,20 @@
                                     tooltipFormat: 'HH:mm',
                                     timezone: 'Europe/Lisbon'
                                 },
-                                title: { display: true, text: 'Hora (Portugal)' }
+                                title: { display: true, text: 'Hora (Portugal)' },
+                                bounds: 'ticks',
+                                distribution: 'series'
                             },
                             y: {
                                 title: { display: true, text: 'Potência (W)' },
                                 min: 0,
-                                max: 5000,  // Limite máximo de 5000W
+                                max: 5000,
                                 ticks: {
                                     stepSize: 500
                                 }
                             }
                         },
                         plugins: {
-                            zoom: {
-                                zoom: {
-                                    wheel: { enabled: true },
-                                    pinch: { enabled: true },
-                                    mode: 'xy'
-                                },
-                                pan: {
-                                    enabled: true,
-                                    mode: 'xy',
-                                    limits: {
-                                        y: { min: 0, max: 5000 }  // Limita o zoom/pan também
-                                    }
-                                }
-                            },
                             legend: {
                                 labels: {
                                     font: {
@@ -689,6 +674,9 @@
                                     }
                                 }
                             }
+                        },
+                        animation: {
+                            duration: 0
                         }
                     }
                 });
@@ -698,7 +686,6 @@
                 const dateKey = date.toFormat('yyyy-MM-dd');
                 elements.currentDate.textContent = helpers.formatDate(date);
                 
-                // Inicializa array se não existir
                 if (!this.data[dateKey]) {
                     this.data[dateKey] = [];
                 }
@@ -711,11 +698,15 @@
                 const dateKey = this.currentDate.toFormat('yyyy-MM-dd');
                 const dayData = this.data[dateKey] || [];
                 
-                this.chart.data.labels = dayData.map(d => d.timestamp);
+                const now = luxon.DateTime.now();
+                const timeThreshold = now.minus({ hours: CONFIG.chartHoursToShow });
+                const recentData = dayData.filter(d => d.timestamp > timeThreshold);
+                
+                this.chart.data.labels = recentData.map(d => d.timestamp);
                 this.chart.data.datasets = [
                     {
                         label: 'Produção Solar',
-                        data: dayData.map(d => d.generation),
+                        data: recentData.map(d => d.generation),
                         borderColor: '#34a853',
                         backgroundColor: 'rgba(52, 168, 83, 0.1)',
                         tension: 0.1,
@@ -723,7 +714,7 @@
                     },
                     {
                         label: 'Consumo',
-                        data: dayData.map(d => d.consumption),
+                        data: recentData.map(d => d.consumption),
                         borderColor: '#fbbc05',
                         backgroundColor: 'rgba(251, 188, 5, 0.1)',
                         tension: 0.1,
@@ -731,7 +722,7 @@
                     },
                     {
                         label: 'Rede Elétrica',
-                        data: dayData.map(d => d.grid),
+                        data: recentData.map(d => d.grid),
                         borderColor: '#ea4335',
                         backgroundColor: 'rgba(234, 67, 53, 0.1)',
                         tension: 0.1,
@@ -739,7 +730,7 @@
                     }
                 ];
                 
-                this.chart.update();
+                this.chart.update('none');
             },
             
             updateTable: function() {
@@ -809,15 +800,13 @@
             }
         };
 
-        // Busca os dados do Shelly EM com sistema de retentativa
+        // Busca os dados do Shelly EM
         async function fetchData(retryCount = 0) {
             helpers.setLoading(true);
             
             try {
                 const timestamp = Date.now();
                 const apiUrl = `https://shelly-96-eu.shelly.cloud/device/status?id=${CONFIG.deviceId}&auth_key=${CONFIG.authKey}&_=${timestamp}`;
-                
-                console.log("Tentando acessar:", apiUrl); // Log para debug
                 
                 const response = await fetch(apiUrl);
                 
@@ -826,9 +815,7 @@
                 }
                 
                 const data = await response.json();
-                console.log("Resposta recebida:", data); // Log para debug
                 
-                // Valida os dados recebidos
                 if (!helpers.validateData(data)) {
                     throw new Error("Dados recebidos são inválidos");
                 }
@@ -841,25 +828,27 @@
                     const avgVoltage = (parseFloat(emeters[0].voltage || 0) + parseFloat(emeters[1].voltage || 0)) / 2;
                     elements.avgVoltage.textContent = helpers.formatVoltage(avgVoltage);
                     
-                    // Canal 0 - Importação da rede
+                    // Canal 0 - Importação/Exportação da rede
                     const importPower = parseFloat(emeters[0].power || 0);
-                    elements.importPower.textContent = helpers.formatNumber(importPower);
+                    elements.importPower.textContent = helpers.formatNumber(Math.abs(importPower));
                     
                     // Canal 1 - Geração solar
                     const generationPower = parseFloat(emeters[1].power || 0);
                     elements.generationPower.textContent = helpers.formatNumber(generationPower);
                     
                     // Calcula consumo (importação + geração)
-                    const consumptionPower = importPower + generationPower;
+                    const consumptionPower = Math.abs(importPower) + generationPower;
                     elements.consumptionPower.textContent = helpers.formatNumber(consumptionPower);
                     
-                    // Atualiza cores dos círculos baseado no fluxo
+                    // Atualiza cor do círculo da rede
                     if (importPower < 0) {
                         // Exportando para rede - verde
-                        elements.importCircle.style.backgroundColor = 'var(--generation)';
+                        elements.importCircle.style.backgroundColor = 'var(--export)';
+                        elements.importPower.textContent = helpers.formatNumber(Math.abs(importPower));
                     } else {
                         // Importando da rede - vermelho
                         elements.importCircle.style.backgroundColor = 'var(--import)';
+                        elements.importPower.textContent = helpers.formatNumber(importPower);
                     }
                 }
                 
@@ -868,7 +857,6 @@
             } catch (error) {
                 console.error("Erro ao buscar dados:", error);
                 
-                // Se ainda houver tentativas, tenta novamente
                 if (retryCount < CONFIG.maxRetries) {
                     helpers.showError(`Erro: ${error.message}. Tentando novamente... (${retryCount + 1}/${CONFIG.maxRetries})`);
                     
@@ -897,8 +885,10 @@
         document.addEventListener('visibilitychange', () => {
             if (document.hidden) {
                 clearInterval(intervalId);
+                clearInterval(energyHistory.chartUpdateInterval);
             } else {
                 startAutoRefresh();
+                energyHistory.startChartAutoUpdate();
             }
         });
         
@@ -907,7 +897,6 @@
             startAutoRefresh();
             energyHistory.init();
             
-            // Redimensiona o gráfico quando a janela muda de tamanho
             window.addEventListener('resize', function() {
                 if (energyHistory.chart) {
                     energyHistory.chart.resize();
